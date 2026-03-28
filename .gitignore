@@ -1,7 +1,6 @@
-# ===== Data & Models (too large for Git) =====
-dataset/
-checkpoints/
-runs/
+# ===== Data & Models =====
+# WARNING: GitHub has a strict 100MB per-file limit. 
+# Checkpoint files (.pth) are ~485MB each and WILL fail to push without Git LFS.
 *.pth
 *.onnx
 *.engine
