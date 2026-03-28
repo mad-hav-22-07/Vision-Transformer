@@ -1,17 +1,16 @@
 from .vit_lane_seg import ViTLaneSeg
-from .patch_embed import PatchEmbedding
-from .positional_encoding import PositionalEncoding
+from .encoder import MultiScaleEncoder
+from .decoder import SegmentationDecoder
+from .deformable_attention import MultiScaleDeformableAttention, DeformableCrossAttentionLayer
 from .attention import MultiHeadSelfAttention
 from .transformer_block import TransformerBlock
-from .encoder import ViTEncoder
-from .decoder import SegmentationDecoder
 
 __all__ = [
     "ViTLaneSeg",
-    "PatchEmbedding",
-    "PositionalEncoding",
+    "MultiScaleEncoder",
+    "SegmentationDecoder",
+    "MultiScaleDeformableAttention",
+    "DeformableCrossAttentionLayer",
     "MultiHeadSelfAttention",
     "TransformerBlock",
-    "ViTEncoder",
-    "SegmentationDecoder",
 ]

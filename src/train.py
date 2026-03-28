@@ -103,6 +103,9 @@ def train_one_epoch(
 
     pbar = tqdm(dataloader, desc=f"Epoch {epoch:03d} [Train]", leave=False)
 
+    grad_accum_steps = config["training"].get("grad_accum_steps", 1)
+    optimizer.zero_grad()
+
     for batch_idx, (images, masks) in enumerate(pbar):
         images = images.to(device, non_blocking=True)
         masks = masks.to(device, non_blocking=True).long()
@@ -111,22 +114,29 @@ def train_one_epoch(
 
         # Forward pass with mixed precision
         with autocast("cuda", enabled=config["training"].get("amp", True)):
-            logits = model(images)
-            loss, loss_dict = criterion(logits, masks)
+            output = model(images)
+            # LDTR model returns (logits, heatmap) during training
+            if isinstance(output, tuple):
+                logits, heatmap = output
+            else:
+                logits, heatmap = output, None
+            loss, loss_dict = criterion(logits, masks, heatmap=heatmap)
+            loss = loss / grad_accum_steps
 
         # Backward pass
-        optimizer.zero_grad()
         scaler.scale(loss).backward()
 
-        # Gradient clipping
-        grad_clip = config["training"].get("grad_clip", 0)
-        if grad_clip > 0:
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+        if (batch_idx + 1) % grad_accum_steps == 0 or (batch_idx + 1) == len(dataloader):
+            # Gradient clipping
+            grad_clip = config["training"].get("grad_clip", 0)
+            if grad_clip > 0:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
 
-        scaler.step(optimizer)
-        scaler.update()
-        scheduler.step()
+            scaler.step(optimizer)
+            scaler.update()
+            scheduler.step()
+            optimizer.zero_grad()
 
         # Metrics
         with torch.no_grad():
@@ -151,6 +161,8 @@ def train_one_epoch(
             writer.add_scalar("train/total_loss", loss_dict["total_loss"], global_step)
             writer.add_scalar("train/focal_loss", loss_dict["focal_loss"], global_step)
             writer.add_scalar("train/dice_loss", loss_dict["dice_loss"], global_step)
+            if "heatmap_loss" in loss_dict:
+                writer.add_scalar("train/heatmap_loss", loss_dict["heatmap_loss"], global_step)
             writer.add_scalar("train/batch_miou", batch_miou, global_step)
             writer.add_scalar("train/lr", optimizer.param_groups[0]["lr"], global_step)
 
@@ -299,6 +311,7 @@ def main():
     criterion = FocalDiceLoss(
         focal_weight=config["loss"].get("focal_weight", 1.0),
         dice_weight=config["loss"].get("dice_weight", 1.0),
+        heatmap_weight=config["loss"].get("heatmap_weight", 0.5),
         alpha=class_weights,
         gamma=config["loss"].get("focal_gamma", 2.0),
     )
@@ -330,7 +343,7 @@ def main():
     best_miou = 0.0
 
     if args.resume:
-        checkpoint = torch.load(args.resume, map_location=device)
+        checkpoint = torch.load(args.resume, map_location=device, weights_only=False)
         model.load_state_dict(checkpoint["model_state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
@@ -348,8 +361,8 @@ def main():
     print(f"[Train] TensorBoard logs: {log_dir}")
 
     # Checkpoint directory
-    ckpt_dir = Path("checkpoints")
-    ckpt_dir.mkdir(exist_ok=True)
+    ckpt_dir = Path(config["logging"].get("ckpt_dir", "checkpoints"))
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     # =============================
     # Training loop
