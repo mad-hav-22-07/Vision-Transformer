@@ -1,0 +1,50 @@
+# ViT-LaneSeg Training Configuration
+# ====================================
+# Modify these parameters to experiment with different architectures
+# and training strategies.
+
+model:
+  img_size: [360, 640]        # Input resolution (H, W) — must be divisible by patch_size
+  patch_size: 16              # Patch size in pixels
+  in_channels: 3              # RGB input
+  embed_dim: 512              # Transformer embedding dimension
+  depth: 12                   # Number of transformer blocks
+  num_heads: 8                # Attention heads (embed_dim / num_heads = head_dim)
+  num_classes: 3              # 0=background, 1=dashed, 2=solid
+  expansion_ratio: 4          # FFN hidden dim = embed_dim × expansion_ratio
+  dropout: 0.1                # Dropout rate (FFN, positional encoding)
+  attn_drop: 0.0              # Attention weight dropout
+  proj_drop: 0.0              # Attention output projection dropout
+  drop_path_rate: 0.1         # Max stochastic depth rate
+  decoder_channels: [256, 128, 64, 32]  # Channel dims for decoder stages
+
+training:
+  batch_size: 8               # Adjust based on GPU memory (8 for ~12GB VRAM)
+  epochs: 100                 # Total training epochs
+  lr: 1.0e-4                  # Peak learning rate (after warmup)
+  weight_decay: 0.05          # AdamW weight decay
+  warmup_epochs: 5            # Linear warmup epochs
+  min_lr: 1.0e-6              # Minimum learning rate (cosine annealing floor)
+  amp: true                   # Enable mixed-precision training (FP16)
+  grad_clip: 1.0              # Max gradient norm (0 = disabled)
+  early_stopping_patience: 15 # Stop if val mIoU doesn't improve for this many epochs
+  save_every: 5               # Save checkpoint every N epochs
+
+data:
+  train_image_dir: "dataset/images/train"
+  val_image_dir: "dataset/images/val"
+  train_mask_dir: "dataset/masks/train"
+  val_mask_dir: "dataset/masks/val"
+  num_workers: 4              # DataLoader workers
+  pin_memory: true            # Pin memory for faster GPU transfer
+
+loss:
+  focal_weight: 1.0           # Weight for Focal loss component
+  dice_weight: 1.0            # Weight for Dice loss component
+  focal_gamma: 2.0            # Focal loss focusing parameter
+  use_class_weights: true     # Auto-compute class weights from dataset
+
+logging:
+  log_dir: "runs"             # TensorBoard log directory
+  log_every: 10               # Log metrics every N batches
+  val_every: 1                # Validate every N epochs

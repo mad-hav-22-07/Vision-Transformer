@@ -1,0 +1,48 @@
+# ===== Data & Models (too large for Git) =====
+dataset/
+checkpoints/
+runs/
+*.pth
+*.onnx
+*.engine
+*.trt
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# ===== Virtual environments =====
+venv/
+env/
+.env/
+.venv/
+
+# ===== IDE =====
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===== Jupyter =====
+.ipynb_checkpoints/
+
+# ===== ROS2 build artifacts =====
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
+
+# ===== TensorRT cache =====
+tensorrt/*.cache
