@@ -183,7 +183,7 @@ def main():
 
     # Load checkpoint
     print(f"[Export] Loading checkpoint: {args.checkpoint}")
-    checkpoint = torch.load(args.checkpoint, map_location=device)
+    checkpoint = torch.load(args.checkpoint, map_location=device, weights_only=False)
     config = checkpoint["config"]
 
     # Create model

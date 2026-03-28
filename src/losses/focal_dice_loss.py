@@ -174,23 +174,25 @@ class DiceLoss(nn.Module):
 
 class FocalDiceLoss(nn.Module):
     """
-    Combined Focal + Dice Loss.
+    Combined Focal + Dice + Heatmap Auxiliary Loss.
 
-    L_total = focal_weight × FocalLoss + dice_weight × DiceLoss
+    L_total = focal_weight × FocalLoss + dice_weight × DiceLoss + heatmap_weight × HeatmapLoss
 
     Args:
-        focal_weight: Weight for focal loss component.
-        dice_weight:  Weight for dice loss component.
-        alpha:        Per-class focal loss weights.
-        gamma:        Focal loss focusing parameter.
-        smooth:       Dice loss smoothing factor.
-        ignore_index: Label index to ignore.
+        focal_weight:   Weight for focal loss component.
+        dice_weight:    Weight for dice loss component.
+        heatmap_weight: Weight for heatmap auxiliary loss (0 = disabled).
+        alpha:          Per-class focal loss weights.
+        gamma:          Focal loss focusing parameter.
+        smooth:         Dice loss smoothing factor.
+        ignore_index:   Label index to ignore.
     """
 
     def __init__(
         self,
         focal_weight: float = 1.0,
         dice_weight: float = 1.0,
+        heatmap_weight: float = 0.5,
         alpha: torch.Tensor | None = None,
         gamma: float = 2.0,
         smooth: float = 1.0,
@@ -200,6 +202,7 @@ class FocalDiceLoss(nn.Module):
 
         self.focal_weight = focal_weight
         self.dice_weight = dice_weight
+        self.heatmap_weight = heatmap_weight
 
         self.focal = FocalLoss(
             alpha=alpha,
@@ -211,13 +214,23 @@ class FocalDiceLoss(nn.Module):
             ignore_index=ignore_index,
         )
 
+        # Heatmap loss (only if weight > 0)
+        self.heatmap_loss = None
+        if heatmap_weight > 0:
+            from .heatmap_loss import HeatmapLoss
+            self.heatmap_loss = HeatmapLoss()
+
     def forward(
-        self, logits: torch.Tensor, targets: torch.Tensor
+        self,
+        logits: torch.Tensor,
+        targets: torch.Tensor,
+        heatmap: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, dict[str, float]]:
         """
         Args:
             logits:  Model output (B, C, H, W).
             targets: Ground truth (B, H, W).
+            heatmap: Optional predicted heatmap (B, 1, H, W) from model.
 
         Returns:
             Tuple of:
@@ -235,7 +248,15 @@ class FocalDiceLoss(nn.Module):
         loss_dict = {
             "focal_loss": focal_loss.item(),
             "dice_loss": dice_loss.item(),
-            "total_loss": total_loss.item(),
         }
 
+        # Add heatmap loss if available
+        if self.heatmap_loss is not None and heatmap is not None:
+            h_loss = self.heatmap_loss(heatmap, targets)
+            total_loss = total_loss + self.heatmap_weight * h_loss
+            loss_dict["heatmap_loss"] = h_loss.item()
+
+        loss_dict["total_loss"] = total_loss.item()
+
         return total_loss, loss_dict
+

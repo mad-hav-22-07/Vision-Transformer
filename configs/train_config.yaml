@@ -1,25 +1,26 @@
-# ViT-LaneSeg Training Configuration
+# LDTR-inspired Lane Segmentation Training Configuration
 # ====================================
-# Modify these parameters to experiment with different architectures
-# and training strategies.
+# Architecture: Multi-Scale CNN-Transformer Encoder + Deformable Decoder
 
 model:
-  img_size: [360, 640]        # Input resolution (H, W) — must be divisible by patch_size
-  patch_size: 16              # Patch size in pixels
-  in_channels: 3              # RGB input
-  embed_dim: 512              # Transformer embedding dimension
-  depth: 12                   # Number of transformer blocks
-  num_heads: 8                # Attention heads (embed_dim / num_heads = head_dim)
-  num_classes: 3              # 0=background, 1=dashed, 2=solid
-  expansion_ratio: 4          # FFN hidden dim = embed_dim × expansion_ratio
-  dropout: 0.1                # Dropout rate (FFN, positional encoding)
-  attn_drop: 0.0              # Attention weight dropout
-  proj_drop: 0.0              # Attention output projection dropout
-  drop_path_rate: 0.1         # Max stochastic depth rate
-  decoder_channels: [256, 128, 64, 32]  # Channel dims for decoder stages
+  img_size: [360, 640]              # Input resolution (H, W)
+  in_channels: 3                    # RGB input
+  backbone_channels: [64, 128, 256] # CNN backbone stage channels (3 scales)
+  embed_dim: 256                    # Transformer/decoder embedding dimension
+  num_heads: 8                      # Attention heads
+  num_classes: 3                    # 0=background, 1=dashed, 2=solid
+  transformer_depth: 6              # Transformer blocks in encoder (at 1/16 scale)
+  num_decoder_layers: 6             # Deformable decoder layers
+  num_queries: 100                  # Learnable query embeddings
+  num_deform_points: 4              # Sampling points per deformable attention head
+  fpn_channels: 128                 # FPN intermediate channels
+  expansion_ratio: 4                # FFN hidden dim = embed_dim × expansion_ratio
+  dropout: 0.1                      # Dropout rate
+  drop_path_rate: 0.1               # Max stochastic depth rate
 
 training:
-  batch_size: 8               # Adjust based on GPU memory (8 for ~12GB VRAM)
+  batch_size: 4                # Adjust based on GPU memory (4 for ~10GB VRAM)
+  grad_accum_steps: 4          # Effective batch size = batch_size * grad_accum_steps (4 * 4 = 16)
   epochs: 100                 # Total training epochs
   lr: 1.0e-4                  # Peak learning rate (after warmup)
   weight_decay: 0.05          # AdamW weight decay
@@ -27,7 +28,7 @@ training:
   min_lr: 1.0e-6              # Minimum learning rate (cosine annealing floor)
   amp: true                   # Enable mixed-precision training (FP16)
   grad_clip: 1.0              # Max gradient norm (0 = disabled)
-  early_stopping_patience: 15 # Stop if val mIoU doesn't improve for this many epochs
+  early_stopping_patience: 20 # Stop if val mIoU doesn't improve for this many epochs
   save_every: 5               # Save checkpoint every N epochs
 
 data:
@@ -41,8 +42,9 @@ data:
 loss:
   focal_weight: 1.0           # Weight for Focal loss component
   dice_weight: 1.0            # Weight for Dice loss component
-  focal_gamma: 2.0            # Focal loss focusing parameter
-  use_class_weights: true     # Auto-compute class weights from dataset
+  heatmap_weight: 0.5         # Weight for Gaussian heatmap auxiliary loss
+  focal_gamma: 3.0            # Focal loss focusing parameter
+  use_class_weights: false    # Disabled: auto-weights caused over-prediction
 
 logging:
   log_dir: "runs"             # TensorBoard log directory

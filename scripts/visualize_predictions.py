@@ -131,7 +131,8 @@ def main():
     parser.add_argument("--image_dir", type=str, default=None, help="Directory of images")
     parser.add_argument("--output_dir", type=str, default="predictions", help="Output directory")
     parser.add_argument("--alpha", type=float, default=0.4, help="Overlay transparency")
-    parser.add_argument("--no-show", action="store_true", help="Don't display images")
+    parser.add_argument("--no-show", action="store_true", default=True, help="Don't display images (default: True)")
+    parser.add_argument("--show", action="store_true", help="Display images in window (requires GUI)")
     parser.add_argument("--device", type=str, default=None)
     args = parser.parse_args()
 
@@ -143,7 +144,7 @@ def main():
 
     # Load model
     print(f"Loading checkpoint: {args.checkpoint}")
-    checkpoint = torch.load(args.checkpoint, map_location=device)
+    checkpoint = torch.load(args.checkpoint, map_location=device, weights_only=False)
     config = checkpoint["config"]
     img_size = tuple(config["model"]["img_size"])
 
@@ -179,7 +180,7 @@ def main():
         visualize(
             original, mask,
             alpha=args.alpha,
-            show=not args.no_show,
+            show=args.show,
             save_path=str(save_path),
         )
 

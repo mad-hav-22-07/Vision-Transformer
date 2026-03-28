@@ -1,145 +1,172 @@
 """
-Vision Transformer Encoder with Multi-Scale Feature Extraction.
+Multi-Scale Encoder for LDTR-inspired Lane Segmentation.
 
-Stacks N TransformerBlocks to form the full encoder. Extracts intermediate
-features at specified layers (skip connections) for the decoder to use,
-enabling multi-scale feature fusion for fine-grained segmentation.
+Replaces the single-scale ViT encoder with a hybrid CNN + Transformer
+architecture that produces multi-scale feature maps, similar to LDTR's
+backbone + encoder design:
+
+    Stage 1: Conv blocks → features at 1/4 resolution
+    Stage 2: Conv blocks → features at 1/8 resolution
+    Stage 3: Conv blocks → features at 1/16 resolution
+    Stage 4: Transformer self-attention on 1/16 features for global context
+
+This gives the decoder both local detail (CNN stages) and global semantic
+understanding (transformer stage), which is critical for detecting lanes
+that span the entire image.
 """
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
-from .patch_embed import PatchEmbedding
 from .positional_encoding import PositionalEncoding
+from .attention import MultiHeadSelfAttention
 from .transformer_block import TransformerBlock
 
 
-class ViTEncoder(nn.Module):
-    """
-    Vision Transformer Encoder.
+class ConvBlock(nn.Module):
+    """Two convolution layers with BatchNorm and GELU."""
 
-    Processes input images through patch embedding → positional encoding →
-    N transformer blocks, extracting features at multiple depths for
-    the segmentation decoder.
+    def __init__(self, in_ch: int, out_ch: int, stride: int = 1):
+        super().__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(in_ch, out_ch, 3, stride=stride, padding=1, bias=False),
+            nn.BatchNorm2d(out_ch),
+            nn.GELU(),
+            nn.Conv2d(out_ch, out_ch, 3, stride=1, padding=1, bias=False),
+            nn.BatchNorm2d(out_ch),
+            nn.GELU(),
+        )
+        # Residual connection
+        self.shortcut = nn.Sequential(
+            nn.Conv2d(in_ch, out_ch, 1, stride=stride, bias=False),
+            nn.BatchNorm2d(out_ch),
+        ) if in_ch != out_ch or stride != 1 else nn.Identity()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.conv(x) + self.shortcut(x)
+
+
+class MultiScaleEncoder(nn.Module):
+    """
+    Multi-Scale Encoder with CNN backbone + Transformer top.
+
+    Produces feature maps at 3 scales (1/4, 1/8, 1/16) for the
+    deformable attention decoder to attend to.
 
     Args:
-        img_size:           Input image resolution (H, W).
-        patch_size:         Patch size in pixels.
-        in_channels:        Number of input image channels.
-        embed_dim:          Token embedding dimension.
-        depth:              Number of transformer blocks.
-        num_heads:          Number of attention heads per block.
-        expansion_ratio:    FFN expansion factor.
-        attn_drop:          Attention dropout rate.
-        proj_drop:          Projection dropout rate.
-        ffn_drop:           FFN dropout rate.
-        drop_path_rate:     Max stochastic depth rate (linearly increases).
-        skip_indices:       Layer indices to extract skip features from.
+        in_channels:       Number of input image channels (3 for RGB).
+        backbone_channels: Channel dimensions for each CNN stage.
+        embed_dim:         Transformer embedding dimension (applied at 1/16 scale).
+        num_heads:         Number of attention heads for transformer blocks.
+        transformer_depth: Number of transformer blocks at the deepest scale.
+        expansion_ratio:   FFN expansion ratio in transformer blocks.
+        dropout:           Dropout rate.
+        drop_path_rate:    Maximum stochastic depth rate.
     """
 
     def __init__(
         self,
-        img_size: tuple[int, int] = (360, 640),
-        patch_size: int = 16,
         in_channels: int = 3,
-        embed_dim: int = 512,
-        depth: int = 12,
+        backbone_channels: tuple[int, ...] = (64, 128, 256),
+        embed_dim: int = 256,
         num_heads: int = 8,
+        transformer_depth: int = 6,
         expansion_ratio: int = 4,
-        attn_drop: float = 0.0,
-        proj_drop: float = 0.0,
-        ffn_drop: float = 0.1,
+        dropout: float = 0.1,
         drop_path_rate: float = 0.1,
-        skip_indices: tuple[int, ...] | None = None,
     ):
         super().__init__()
 
         self.embed_dim = embed_dim
-        self.depth = depth
+        self.num_feature_levels = len(backbone_channels)
 
-        # Default: extract features from layers 3, 6, 9 (0-indexed: 2, 5, 8)
-        # The final layer output is always included
-        if skip_indices is None:
-            self.skip_indices = self._default_skip_indices(depth)
-        else:
-            self.skip_indices = skip_indices
-
-        # Patch embedding
-        self.patch_embed = PatchEmbedding(
-            img_size=img_size,
-            patch_size=patch_size,
-            in_channels=in_channels,
-            embed_dim=embed_dim,
+        # --- CNN Backbone Stages ---
+        # Stage 1: stride-4 (two stride-2 convs) → 1/4 resolution
+        self.stage1 = nn.Sequential(
+            ConvBlock(in_channels, backbone_channels[0], stride=2),
+            ConvBlock(backbone_channels[0], backbone_channels[0], stride=2),
         )
 
-        # Positional encoding
-        self.pos_encoding = PositionalEncoding(
-            num_patches=self.patch_embed.num_patches,
-            embed_dim=embed_dim,
-            grid_size=self.patch_embed.grid_size,
-            dropout=ffn_drop,
+        # Stage 2: stride-2 → 1/8 resolution
+        self.stage2 = nn.Sequential(
+            ConvBlock(backbone_channels[0], backbone_channels[1], stride=2),
+            ConvBlock(backbone_channels[1], backbone_channels[1], stride=1),
         )
 
-        # Linearly increasing stochastic depth rates
-        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]
+        # Stage 3: stride-2 → 1/16 resolution
+        self.stage3 = nn.Sequential(
+            ConvBlock(backbone_channels[1], backbone_channels[2], stride=2),
+            ConvBlock(backbone_channels[2], backbone_channels[2], stride=1),
+        )
 
-        # Stack of transformer blocks
-        self.blocks = nn.ModuleList([
+        # --- Feature Projection ---
+        # Project each backbone stage output to embed_dim for the decoder
+        self.level_projs = nn.ModuleList([
+            nn.Sequential(
+                nn.Conv2d(ch, embed_dim, 1, bias=False),
+                nn.BatchNorm2d(embed_dim),
+            )
+            for ch in backbone_channels
+        ])
+
+        # --- Transformer Encoder at 1/16 scale ---
+        # Adds global self-attention on the deepest features
+        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, transformer_depth)]
+        self.transformer_blocks = nn.ModuleList([
             TransformerBlock(
                 embed_dim=embed_dim,
                 num_heads=num_heads,
                 expansion_ratio=expansion_ratio,
-                attn_drop=attn_drop,
-                proj_drop=proj_drop,
-                ffn_drop=ffn_drop,
+                ffn_drop=dropout,
                 drop_path=dpr[i],
             )
-            for i in range(depth)
+            for i in range(transformer_depth)
         ])
-
-        # Final layer norm
-        self.norm = nn.LayerNorm(embed_dim)
-
-    @staticmethod
-    def _default_skip_indices(depth: int) -> tuple[int, ...]:
-        """Compute evenly-spaced skip connection layer indices."""
-        if depth <= 4:
-            return tuple(range(depth))
-        step = depth // 4
-        return (step - 1, 2 * step - 1, 3 * step - 1)
+        self.transformer_norm = nn.LayerNorm(embed_dim)
 
     def forward(
         self, x: torch.Tensor
-    ) -> tuple[torch.Tensor, list[torch.Tensor]]:
+    ) -> tuple[list[torch.Tensor], list[tuple[int, int]]]:
         """
-        Forward pass through the encoder.
+        Forward pass through multi-scale encoder.
 
         Args:
             x: Input images (B, C, H, W).
 
         Returns:
             Tuple of:
-                - Final encoder output (B, num_patches, embed_dim).
-                - List of skip features from intermediate layers,
-                  each of shape (B, num_patches, embed_dim).
+                - List of feature maps per level, each (B, H_l*W_l, embed_dim).
+                - List of spatial shapes per level, each (H_l, W_l).
         """
-        # Patch embedding: (B, C, H, W) → (B, N, D)
-        x = self.patch_embed(x)
+        # CNN backbone stages
+        f1 = self.stage1(x)   # (B, C1, H/4,  W/4)
+        f2 = self.stage2(f1)  # (B, C2, H/8,  W/8)
+        f3 = self.stage3(f2)  # (B, C3, H/16, W/16)
 
-        # Add positional encoding
-        x = self.pos_encoding(x)
+        backbone_features = [f1, f2, f3]
 
-        # Collect skip features for decoder
-        skip_features = []
+        # Project all levels to embed_dim and flatten to sequences
+        feature_list = []
+        spatial_shapes = []
 
-        # Process through transformer blocks
-        for i, block in enumerate(self.blocks):
-            x = block(x)
+        for lvl, (feat, proj) in enumerate(zip(backbone_features, self.level_projs)):
+            B, _, H_l, W_l = feat.shape
+            spatial_shapes.append((H_l, W_l))
 
-            if i in self.skip_indices:
-                skip_features.append(x)
+            # Project channels
+            feat_proj = proj(feat)  # (B, embed_dim, H_l, W_l)
 
-        # Final norm
-        x = self.norm(x)
+            if lvl == len(backbone_features) - 1:
+                # Apply transformer self-attention on deepest features
+                tokens = feat_proj.flatten(2).transpose(1, 2)  # (B, N, D)
+                for block in self.transformer_blocks:
+                    tokens = block(tokens)
+                tokens = self.transformer_norm(tokens)
+                feature_list.append(tokens)
+            else:
+                # Just flatten for CNN-only levels
+                tokens = feat_proj.flatten(2).transpose(1, 2)  # (B, N, D)
+                feature_list.append(tokens)
 
-        return x, skip_features
+        return feature_list, spatial_shapes
