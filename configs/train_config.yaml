@@ -5,7 +5,9 @@
 model:
   img_size: [360, 640]              # Input resolution (H, W)
   in_channels: 3                    # RGB input
-  backbone_channels: [64, 128, 256] # CNN backbone stage channels (3 scales)
+  backbone: "resnet50"              # Pretrained backbone
+  backbone_channels: [256, 512, 1024] # ResNet-50 stage channels
+  freeze_backbone: true             # Freeze ResNet layers to prevent overfitting
   embed_dim: 256                    # Transformer/decoder embedding dimension
   num_heads: 8                      # Attention heads
   num_classes: 3                    # 0=background, 1=dashed, 2=solid
@@ -48,5 +50,6 @@ loss:
 
 logging:
   log_dir: "runs"             # TensorBoard log directory
+  ckpt_dir: "checkpoints"     # Directory to save model checkpoints
   log_every: 10               # Log metrics every N batches
   val_every: 1                # Validate every N epochs

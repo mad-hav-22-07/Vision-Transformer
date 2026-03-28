@@ -7,7 +7,7 @@ from src.model import ViTLaneSeg
 print("Creating LDTR-inspired model...")
 model = ViTLaneSeg(
     img_size=(360, 640),
-    backbone_channels=(64, 128, 256),
+    backbone_channels=(256, 512, 1024),
     embed_dim=256,
     num_heads=8,
     num_classes=3,

@@ -24,81 +24,71 @@ from .attention import MultiHeadSelfAttention
 from .transformer_block import TransformerBlock
 
 
-class ConvBlock(nn.Module):
-    """Two convolution layers with BatchNorm and GELU."""
-
-    def __init__(self, in_ch: int, out_ch: int, stride: int = 1):
-        super().__init__()
-        self.conv = nn.Sequential(
-            nn.Conv2d(in_ch, out_ch, 3, stride=stride, padding=1, bias=False),
-            nn.BatchNorm2d(out_ch),
-            nn.GELU(),
-            nn.Conv2d(out_ch, out_ch, 3, stride=1, padding=1, bias=False),
-            nn.BatchNorm2d(out_ch),
-            nn.GELU(),
-        )
-        # Residual connection
-        self.shortcut = nn.Sequential(
-            nn.Conv2d(in_ch, out_ch, 1, stride=stride, bias=False),
-            nn.BatchNorm2d(out_ch),
-        ) if in_ch != out_ch or stride != 1 else nn.Identity()
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.conv(x) + self.shortcut(x)
-
+from torchvision.models import resnet50, ResNet50_Weights
 
 class MultiScaleEncoder(nn.Module):
     """
-    Multi-Scale Encoder with CNN backbone + Transformer top.
+    Multi-Scale Encoder with pretrained ResNet-50 backbone + Transformer top.
 
     Produces feature maps at 3 scales (1/4, 1/8, 1/16) for the
     deformable attention decoder to attend to.
 
     Args:
         in_channels:       Number of input image channels (3 for RGB).
-        backbone_channels: Channel dimensions for each CNN stage.
+        backbone_channels: Channel dimensions for each CNN stage (256, 512, 1024 for ResNet-50).
         embed_dim:         Transformer embedding dimension (applied at 1/16 scale).
         num_heads:         Number of attention heads for transformer blocks.
         transformer_depth: Number of transformer blocks at the deepest scale.
         expansion_ratio:   FFN expansion ratio in transformer blocks.
         dropout:           Dropout rate.
         drop_path_rate:    Maximum stochastic depth rate.
+        freeze_backbone:   If True, freezes the ResNet backbone weights.
     """
 
     def __init__(
         self,
         in_channels: int = 3,
-        backbone_channels: tuple[int, ...] = (64, 128, 256),
+        backbone_channels: tuple[int, ...] = (256, 512, 1024),
         embed_dim: int = 256,
         num_heads: int = 8,
         transformer_depth: int = 6,
         expansion_ratio: int = 4,
         dropout: float = 0.1,
         drop_path_rate: float = 0.1,
+        freeze_backbone: bool = False,
     ):
         super().__init__()
 
         self.embed_dim = embed_dim
         self.num_feature_levels = len(backbone_channels)
 
-        # --- CNN Backbone Stages ---
-        # Stage 1: stride-4 (two stride-2 convs) → 1/4 resolution
+        # --- Base ResNet-50 Backbone ---
+        resnet = resnet50(weights=ResNet50_Weights.DEFAULT)
+        if in_channels != 3:
+            resnet.conv1 = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
+
+        # Stage 1: stride-4 → 1/4 resolution (256 channels)
         self.stage1 = nn.Sequential(
-            ConvBlock(in_channels, backbone_channels[0], stride=2),
-            ConvBlock(backbone_channels[0], backbone_channels[0], stride=2),
+            resnet.conv1,
+            resnet.bn1,
+            resnet.relu,
+            resnet.maxpool, # maxpool causes total stride of 4
+            resnet.layer1
         )
 
-        # Stage 2: stride-2 → 1/8 resolution
-        self.stage2 = nn.Sequential(
-            ConvBlock(backbone_channels[0], backbone_channels[1], stride=2),
-            ConvBlock(backbone_channels[1], backbone_channels[1], stride=1),
-        )
+        # Stage 2: stride-2 → 1/8 resolution (512 channels)
+        self.stage2 = resnet.layer2
 
-        # Stage 3: stride-2 → 1/16 resolution
-        self.stage3 = nn.Sequential(
-            ConvBlock(backbone_channels[1], backbone_channels[2], stride=2),
-            ConvBlock(backbone_channels[2], backbone_channels[2], stride=1),
-        )
+        # Stage 3: stride-2 → 1/16 resolution (1024 channels)
+        self.stage3 = resnet.layer3
+
+        if freeze_backbone:
+            for param in self.stage1.parameters():
+                param.requires_grad = False
+            for param in self.stage2.parameters():
+                param.requires_grad = False
+            for param in self.stage3.parameters():
+                param.requires_grad = False
 
         # --- Feature Projection ---
         # Project each backbone stage output to embed_dim for the decoder
@@ -140,9 +130,9 @@ class MultiScaleEncoder(nn.Module):
                 - List of spatial shapes per level, each (H_l, W_l).
         """
         # CNN backbone stages
-        f1 = self.stage1(x)   # (B, C1, H/4,  W/4)
-        f2 = self.stage2(f1)  # (B, C2, H/8,  W/8)
-        f3 = self.stage3(f2)  # (B, C3, H/16, W/16)
+        f1 = self.stage1(x)   # (B, 256,  H/4,  W/4)
+        f2 = self.stage2(f1)  # (B, 512,  H/8,  W/8)
+        f3 = self.stage3(f2)  # (B, 1024, H/16, W/16)
 
         backbone_features = [f1, f2, f3]
 
@@ -170,3 +160,4 @@ class MultiScaleEncoder(nn.Module):
                 feature_list.append(tokens)
 
         return feature_list, spatial_shapes
+

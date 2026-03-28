@@ -361,8 +361,8 @@ def main():
     print(f"[Train] TensorBoard logs: {log_dir}")
 
     # Checkpoint directory
-    ckpt_dir = Path("checkpoints")
-    ckpt_dir.mkdir(exist_ok=True)
+    ckpt_dir = Path(config["logging"].get("ckpt_dir", "checkpoints"))
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     # =============================
     # Training loop

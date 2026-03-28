@@ -51,7 +51,7 @@ class ViTLaneSeg(nn.Module):
         self,
         img_size: tuple[int, int] = (360, 640),
         in_channels: int = 3,
-        backbone_channels: tuple[int, ...] = (64, 128, 256),
+        backbone_channels: tuple[int, ...] = (256, 512, 1024),
         embed_dim: int = 256,
         num_heads: int = 8,
         num_classes: int = 3,
@@ -63,6 +63,7 @@ class ViTLaneSeg(nn.Module):
         expansion_ratio: int = 4,
         dropout: float = 0.1,
         drop_path_rate: float = 0.1,
+        freeze_backbone: bool = False,
     ):
         super().__init__()
 
@@ -79,6 +80,7 @@ class ViTLaneSeg(nn.Module):
             expansion_ratio=expansion_ratio,
             dropout=dropout,
             drop_path_rate=drop_path_rate,
+            freeze_backbone=freeze_backbone,
         )
 
         # Transformer Segmentation Decoder
@@ -152,7 +154,7 @@ class ViTLaneSeg(nn.Module):
         return cls(
             img_size=tuple(model_cfg.get("img_size", [360, 640])),
             in_channels=model_cfg.get("in_channels", 3),
-            backbone_channels=tuple(model_cfg.get("backbone_channels", [64, 128, 256])),
+            backbone_channels=tuple(model_cfg.get("backbone_channels", [256, 512, 1024])),
             embed_dim=model_cfg.get("embed_dim", 256),
             num_heads=model_cfg.get("num_heads", 8),
             num_classes=model_cfg.get("num_classes", 3),
@@ -164,4 +166,5 @@ class ViTLaneSeg(nn.Module):
             expansion_ratio=model_cfg.get("expansion_ratio", 4),
             dropout=model_cfg.get("dropout", 0.1),
             drop_path_rate=model_cfg.get("drop_path_rate", 0.1),
+            freeze_backbone=model_cfg.get("freeze_backbone", False),
         )
